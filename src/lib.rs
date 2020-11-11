@@ -1,105 +1,81 @@
 /* Copyright (C) 2020 Dylan Staatz - All Rights Reserved. */
 
 
-use rdev::{Event, EventType, Key};
+// `error_chain!` can recurse deeply
+#![recursion_limit = "1024"]
+
+#[macro_use]
+extern crate error_chain;
+
+mod errors;
+mod controller;
 
 
-#[derive(Debug)]
-enum KeyState {
-    Pressed,
-    Released,
+////////////////////////////////////////////////////////////////////////////////
+
+
+use std::sync::RwLock;
+use std::thread;
+
+use rosrust_msg::std_msgs::Float64;
+use lazy_static::lazy_static;
+use rdev::{listen, Event};
+
+use errors::*;
+use controller::*;
+
+
+lazy_static! {
+    static ref CONTROLLER_STATE: RwLock<ControllerState> = {
+        RwLock::new(ControllerState::default())
+    };
 }
 
-#[derive(Debug)]
-struct ControlKey {
-    key: Key,
-    state: KeyState,
+fn process_event(event: Event) {
+    CONTROLLER_STATE
+        .write()
+        .expect("Failed to unock Mutex")
+        .process_event(event);
 }
 
-#[derive(Debug)]
-pub struct ControllerState {
-    forward: ControlKey,
-    reverse: ControlKey,
-    right: ControlKey,
-    left: ControlKey,
-}
 
-impl ControllerState {
-    pub fn default() -> Self {
-        Self {
-            forward: ControlKey {
-                key: Key::UpArrow,
-                state: KeyState::Released
-            },
-            reverse: ControlKey {
-                key: Key::DownArrow,
-                state: KeyState::Released
-            },
-            right: ControlKey {
-                key: Key::RightArrow,
-                state: KeyState::Released
-            },
-            left: ControlKey {
-                key: Key::LeftArrow,
-                state: KeyState::Released
-            },
-        }
-    }
+pub fn run() -> Result<()> {
 
-    pub fn process_event(&mut self, event: Event) {
+    rosrust::ros_info!("Starting tiger_controller");
+
+    // Create publishers
+    let drivetrain_pub = rosrust::publish("/tiger_car/control/drivetrain", 100)?;
+    let steering_pub = rosrust::publish("/tiger_car/control/steering", 100)?;
+
+    // spawn new thread because listen blocks
+    thread::spawn(move || {
+        listen(process_event).expect("Could not listen");
+    });
+
+    // Create object that maintains 10Hz between sleep requests
+    let rate = rosrust::rate(10.0);
+
+    // Breaks when a shutdown signal is sent
+    while rosrust::is_ok() {
         
-        match event.event_type {
-            EventType::KeyPress(key) => {
-                if key == self.forward.key {
-                    self.forward.state = KeyState::Pressed;
-                } else if key == self.reverse.key {
-                    self.reverse.state = KeyState::Pressed;
-                } else if key == self.right.key {
-                    self.right.state = KeyState::Pressed;
-                } else if key == self.left.key {
-                    self.left.state = KeyState::Pressed;
-                }
-            },
-            EventType::KeyRelease(key) => {
-                if key == self.forward.key {
-                    self.forward.state = KeyState::Released;
-                } else if key == self.reverse.key {
-                    self.reverse.state = KeyState::Released;
-                } else if key == self.right.key {
-                    self.right.state = KeyState::Released;
-                } else if key == self.left.key {
-                    self.left.state = KeyState::Released;
-                }
-            },
-            _ => (),
-        };
+        let mut drive_msg = Float64::default();
+        let mut steering_msg = Float64::default();
+
+        {
+            // Get controller state
+            let state = CONTROLLER_STATE.read().expect("Failed to unlock Mutex");
+
+            drive_msg.data = state.get_drive();
+            steering_msg.data = state.get_steering();
+        }
+
+        drivetrain_pub.send(drive_msg)?;
+        steering_pub.send(steering_msg)?;
+
+        // Sleep to maintain rate
+        rate.sleep();
     }
 
-    pub fn get_drive(&self) -> f64 {
-        match self.forward.state {
-            KeyState::Pressed => match self.reverse.state {
-                KeyState::Pressed => 0.0,
-                KeyState::Released => 1.0,
-            },
-            KeyState::Released => match self.reverse.state {
-                KeyState::Pressed => -1.0,
-                KeyState::Released => 0.0,
-            },
-        }
-    }
-
-    pub fn get_steering(&self) -> f64 {
-        match self.right.state {
-            KeyState::Pressed => match self.left.state {
-                KeyState::Pressed => 0.0,
-                KeyState::Released => 1.0,
-            },
-            KeyState::Released => match self.left.state {
-                KeyState::Pressed => -1.0,
-                KeyState::Released => 0.0,
-            },
-        }
-    }
+    Ok(())
 }
 
-// TODO: tests
