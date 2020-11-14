@@ -44,8 +44,8 @@ pub fn run() -> Result<()> {
     rosrust::ros_info!("Starting tiger_controller");
 
     // Create publishers
-    let drivetrain_pub = rosrust::publish("/tiger_car/control/drivetrain", 100)?;
-    let steering_pub = rosrust::publish("/tiger_car/control/steering", 100)?;
+    let drivetrain_pub = rosrust::publish("/tiger_car/speed", 100)?;
+    let steering_pub = rosrust::publish("/tiger_car/steer", 100)?;
 
     // spawn new thread because listen blocks
     thread::spawn(move || {
